@@ -3,60 +3,71 @@ from typing import Any, Callable
 
 import numpy as np
 from beartype import beartype as typed
-from jaxtyping import Float
+from jaxtyping import Float, Int
+from joblib import delayed, Parallel
+from numpy import ndarray as ND
 from openskill.models import BradleyTerryFull
-from sklearn.linear_model import ARDRegression, LinearRegression, Ridge
+from sklearn.linear_model import (
+    ARDRegression,
+    LinearRegression,
+    LogisticRegression,
+    Ridge,
+    RidgeCV,
+)
 from sklearn.metrics import mean_squared_error
 from tqdm.auto import tqdm
 
 
 class Arena:
-    @typed
-    def __init__(self, compete_fn: Callable[[Any, Any], bool]):
-        self.compete_fn = compete_fn
-        self.entities = {}  # Maps entity to its Rating
-        self.model = BradleyTerryFull()
+    def __init__(self, n_players: int):
+        self.model = LogisticRegression(fit_intercept=False)
+        self.n_players = n_players
+        self.X = np.zeros((0, 2 * n_players))
+        self.y = np.zeros(0)
+        self.fitted = False
 
     @typed
-    def add_entity(self, entity: str) -> None:
-        if entity not in self.entities:
-            self.entities[entity] = self.model.rating(name=entity)
+    def add_data(self, winners: Int[ND, "matches"], losers: Int[ND, "matches"]) -> None:
+        n_matches = len(winners)
+        X = np.zeros((2 * n_matches, 2 * self.n_players))
+        y = np.zeros(2 * n_matches)
+
+        # For each match, add two training examples:
+        # (winner, loser, 1) and (loser, winner, 0)
+        for i in range(n_matches):
+            # Winner vs loser (win)
+            X[2 * i, winners[i]] = 1
+            X[2 * i, self.n_players + losers[i]] = 1
+            y[2 * i] = 1
+
+            # Loser vs winner (loss)
+            X[2 * i + 1, losers[i]] = 1
+            X[2 * i + 1, self.n_players + winners[i]] = 1
+            y[2 * i + 1] = 0
+
+        self.X = np.concatenate([self.X, X])
+        self.y = np.concatenate([self.y, y])
+        self.fitted = False
 
     @typed
-    def run(self, n_matches: int) -> None:
-        """Run n matches between randomly selected entities."""
-        entities = list(self.entities.keys())
-        if len(entities) < 2:
-            raise ValueError("Need at least 2 entities to run matches")
-        for _ in tqdm(range(n_matches)):
-            idx1, idx2 = np.random.choice(len(entities), size=2, replace=False)
-            entity1, entity2 = entities[idx1], entities[idx2]
-
-            entity1_won = self.compete_fn(entity1, entity2)
-
-            team1 = [self.entities[entity1]]
-            team2 = [self.entities[entity2]]
-            if entity1_won:
-                (new_team1,), (new_team2,) = self.model.rate([team1, team2])
-                winner, loser = entity1, entity2
-            else:
-                (new_team2,), (new_team1,) = self.model.rate([team2, team1])
-                winner, loser = entity2, entity1
-
-            self.entities[entity1] = new_team1
-            self.entities[entity2] = new_team2
+    def fit(self) -> None:
+        if self.fitted:
+            return
+        self.model.fit(self.X, self.y)
+        self.fitted = True
 
     @typed
-    def get_scores(self) -> dict[str, float]:
-        """Return a dictionary mapping entity names to their scores (mu values)."""
-        return {str(entity): rating.mu for entity, rating in self.entities.items()}
+    def get_scores(self) -> Float[ND, "n_players"]:
+        return self.model.coef_[0, : self.n_players]
 
     @typed
-    def predict_win(self, x: str, y: str) -> float:
-        """Predict the probability of x winning over y."""
-        x_rating = self.entities[x]
-        y_rating = self.entities[y]
-        return self.model.predict_win([[x_rating], [y_rating]])[0]
+    def predict_win(
+        self, first: Int[ND, "matches"], second: Int[ND, "matches"]
+    ) -> Float[ND, "matches"]:
+        X = np.zeros((len(first), 2 * self.n_players))
+        X[:, first] = 1
+        X[:, self.n_players + second] = 1
+        return self.model.predict_proba(X)[:, 1]
 
 
 @typed
@@ -66,10 +77,10 @@ def generate_dataset(
     n_samples: int = 1000,
     n_features: int = 20,
 ) -> tuple[
-    Float[np.ndarray, "n_samples n_features"],
-    Float[np.ndarray, "n_samples"],
-    Float[np.ndarray, "n_test n_features"],
-    Float[np.ndarray, "n_test"],
+    Float[ND, "n_samples n_features"],
+    Float[ND, "n_samples"],
+    Float[ND, "n_test n_features"],
+    Float[ND, "n_test"],
 ]:
     """Generate a dataset based on a linear model with noise.
 
@@ -120,95 +131,122 @@ def generate_dataset(
     return X_train, Y_train, X_test, Y_test
 
 
+def ridge_adaptive(X_train, y_train, X_test):
+    alpha = 1.0 / (2 * len(X_train))
+    model = Ridge(alpha=alpha)
+    model.fit(X_train, y_train)
+    return model.predict(X_test)
+
+
+def ridge_fixed(X_train, y_train, X_test):
+    model = Ridge(alpha=1.0)
+    model.fit(X_train, y_train)
+    return model.predict(X_test)
+
+
+def ard(X_train, y_train, X_test):
+    model = ARDRegression()
+    model.fit(X_train, y_train)
+    return model.predict(X_test)
+
+
+def linear(X_train, y_train, X_test):
+    model = LinearRegression()
+    model.fit(X_train, y_train)
+    return model.predict(X_test)
+
+
+def ridgecv(X_train, y_train, X_test):
+    model = RidgeCV(alphas=10 ** np.linspace(-4, 2, 20), cv=3)
+    model.fit(X_train, y_train)
+    return model.predict(X_test)
+
+
+players = {
+    "Ridge(adaptive)": ridge_adaptive,
+    "Ridge(1.0)": ridge_fixed,
+    "ARDRegression": ard,
+    "LinearRegression": linear,
+    "RidgeCV": ridgecv,
+}
+
+
 @typed
-def create_player_list() -> dict[str, Callable]:
-    """Create a list of ML models to compare."""
-    players = {}
-
-    # Ridge with adaptive alpha
-    def ridge_adaptive(X_train, y_train, X_test):
-        alpha = 1.0 / (2 * len(X_train))
-        model = Ridge(alpha=alpha)
-        model.fit(X_train, y_train)
-        return model.predict(X_test)
-
-    players["Ridge(adaptive)"] = ridge_adaptive
-
-    # Ridge with fixed alpha
-    def ridge_fixed(X_train, y_train, X_test):
-        model = Ridge(alpha=1.0)
-        model.fit(X_train, y_train)
-        return model.predict(X_test)
-
-    players["Ridge(1.0)"] = ridge_fixed
-
-    # ARDRegression
-    def ard(X_train, y_train, X_test):
-        model = ARDRegression()
-        model.fit(X_train, y_train)
-        return model.predict(X_test)
-
-    players["ARDRegression"] = ard
-
-    # LinearRegression
-    def linear(X_train, y_train, X_test):
-        model = LinearRegression()
-        model.fit(X_train, y_train)
-        return model.predict(X_test)
-
-    players["LinearRegression"] = linear
-
-    return players
+def compete(player1: str, player2: str) -> bool:
+    X_train, y_train, X_test, y_test = generate_dataset(
+        outliers=False, bad_features=True
+    )
+    pred1 = players[player1](X_train, y_train, X_test)
+    pred2 = players[player2](X_train, y_train, X_test)
+    mse1 = mean_squared_error(y_test, pred1)
+    mse2 = mean_squared_error(y_test, pred2)
+    return mse1 < mse2
 
 
-def test_ml_arena():
-    players = create_player_list()
-
-    # Create a competition function
-    def compete(player1, player2):
-        # Generate a dataset
-        # outliers = np.random.random() > 0.5
-        # bad_features = np.random.random() > 0.5
-        X_train, y_train, X_test, y_test = generate_dataset(
-            outliers=False, bad_features=True
-        )
-
-        # Get predictions
-        pred1 = players[player1](X_train, y_train, X_test)
-        pred2 = players[player2](X_train, y_train, X_test)
-
-        # Calculate MSE
-        mse1 = mean_squared_error(y_test, pred1)
-        mse2 = mean_squared_error(y_test, pred2)
-
-        # Lower MSE is better
-        return mse1 < mse2
-
-    # Create arena
-    arena = Arena(compete)
-
-    # Add players
-    for player_name in players:
-        arena.add_entity(player_name)
-
-    # Run matches
-    arena.run(5000)
-
-    # Print results
-    print("\nFinal scores:")
-    scores = arena.get_scores()
-    for player, score in sorted(scores.items(), key=lambda x: -x[1]):
-        print(f"{player}: {score:.2f}")
-
-    # Print win probabilities
-    print("\nWin probabilities:")
+def run_ml_arena(n_matches: int = 10**4, n_bootstrap: int = 10**3):
     player_names = list(players.keys())
-    for i in range(len(player_names)):
-        for j in range(i + 1, len(player_names)):
-            p1, p2 = player_names[i], player_names[j]
-            prob = arena.predict_win(p1, p2)
-            print(f"P({p1} wins over {p2}): {prob:.2f}")
+    winners = []
+    losers = []
+
+    def run_match(player_names):
+        i, j = np.random.choice(range(len(player_names)), size=2, replace=False)
+        if compete(player_names[i], player_names[j]):
+            return i, j
+        return None
+
+    results = Parallel(n_jobs=-1)(
+        delayed(run_match)(player_names) for _ in tqdm(range(n_matches))
+    )
+    for result in results:
+        if result is not None:
+            winners.append(result[0])
+            losers.append(result[1])
+    winners = np.array(winners)
+    losers = np.array(losers)
+    estimates = []
+    for _ in tqdm(range(n_bootstrap)):
+        matches_bootstrap = np.random.choice(
+            range(len(winners)), size=len(winners), replace=True
+        )
+        winners_bootstrap = winners[matches_bootstrap]
+        losers_bootstrap = losers[matches_bootstrap]
+        arena = Arena(len(player_names))
+        arena.add_data(winners_bootstrap, losers_bootstrap)
+        arena.fit()
+        scores_estimate = np.round(arena.get_scores(), 2)
+        estimates.append(scores_estimate)
+    estimates = np.array(estimates)
+    means = np.mean(estimates, axis=0)
+    stds = np.std(estimates, axis=0)
+    print("Scores after training:")
+    for name, score, std in sorted(
+        zip(player_names, means, stds),
+        key=lambda x: x[1],
+        reverse=True,
+    ):
+        print(f"{name}: {score:.2f} ± {std:.2f}")
+
+
+def test_new_arena():
+    # Simple test for the new arena implementation
+    winners = np.array([0, 1, 0])
+    losers = np.array([1, 2, 2])
+    arena = Arena(3)
+    arena.add_data(winners, losers)
+    arena.fit()
+
+    scores = np.round(arena.get_scores(), 2)
+    print("Scores after training:")
+    print(scores)
+
+    def w(i, j):
+        return arena.predict_win(np.array([i]), np.array([j])).item()
+
+    print("\nWin probabilities:")
+    print(f"P(A wins over B): {w(0, 1):.2f}")
+    print(f"P(B wins over C): {w(1, 2):.2f}")
+    print(f"P(A wins over C): {w(0, 2):.2f}")
 
 
 if __name__ == "__main__":
-    test_ml_arena()
+    run_ml_arena()
