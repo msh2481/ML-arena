@@ -296,12 +296,12 @@ def plot_ratings(
 
 
 def main() -> None:
-    # arena_timestamps, ratings_by_method = load_arena_files()
-    # if arena_timestamps:
-    #     print(f"Found {len(arena_timestamps)} arena files.")
-    #     plot_ratings(arena_timestamps, ratings_by_method)
-    # else:
-    #     print("No arena CSV files found.")
+    arena_timestamps, ratings_by_method = load_arena_files()
+    if arena_timestamps:
+        print(f"Found {len(arena_timestamps)} arena files.")
+        plot_ratings(arena_timestamps, ratings_by_method)
+    else:
+        print("No arena CSV files found.")
 
     metrics_timestamps, metrics_by_dataset = load_metrics_files()
     if metrics_timestamps:

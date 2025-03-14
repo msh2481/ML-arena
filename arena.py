@@ -273,7 +273,7 @@ if __name__ == "__main__":
     df = run_ml_arena(
         datasets=datasets,
         bad_features=True,
-        outliers=True,
+        outliers=False,
         matches=10,
     )
     filename = f"results/arena_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"

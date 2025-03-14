@@ -4,6 +4,7 @@ from sklearn.base import BaseEstimator
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import (
     ARDRegression,
+    BayesianRidge,
     Lasso,
     LassoCV,
     LinearRegression,
@@ -105,25 +106,15 @@ players = {
     # Classical methods
     "LinearRegression": lambda x, _: wrap(LinearRegression()),
     "Ridge(1/(2n))": lambda x, _: wrap(Ridge(1 / (2 * len(x)))),
+    "BayessianRidge": lambda x, _: wrap(BayesianRidge()),
     "RidgeCV(cv=10)": lambda x, _: wrap(
         RidgeCV(alphas=10 ** np.linspace(-4, 2, 20), cv=10)
     ),
     "LassoCV(cv=10)": lambda x, _: wrap(LassoCV(cv=10)),
     "ARDRegression": lambda x, _: wrap(ARDRegression()),
     # Modifications
-    "Ridge": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="id", outliers="id"),
-    "Ridge+BFS": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="bfs", outliers="id"),
-    # "Ridge+RFS": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="rfs", outliers="id"),
-    # "Ridge+Robust": lambda x, _: wrap(
-    #     Ridge(1 / (2 * len(x))), feats="id", outliers="robust"
-    # ),
-    # "Ridge+BFS+Robust": lambda x, _: wrap(
-    #     Ridge(1 / (2 * len(x))), feats="bfs", outliers="robust"
-    # ),
-    # "ARDRegression+Robust": lambda x, _: wrap(
-    #     ARDRegression(), feats="id", outliers="robust"
-    # ),
-    # "Ridge+RFS+Robust": lambda x, _: wrap(
-    #     Ridge(1 / (2 * len(x))), feats="rfs", outliers="robust"
-    # ),
+    "Ridge": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="id"),
+    "BFS(Ridge)": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="bfs"),
+    "BFS(ARDRegression)": lambda x, _: wrap(ARDRegression(), feats="bfs"),
+    "BFS(BayessianRidge)": lambda x, _: wrap(BayesianRidge(), feats="bfs"),
 }
