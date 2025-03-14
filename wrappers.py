@@ -10,10 +10,18 @@ from numpy import ndarray as ND
 from scipy.stats import norm as gaussian, t as student_t
 from sklearn.base import BaseEstimator, clone, RegressorMixin
 from sklearn.isotonic import IsotonicRegression
-from sklearn.linear_model import ARDRegression, Lasso, LassoCV, Ridge, RidgeCV
+from sklearn.linear_model import (
+    ARDRegression,
+    BayesianRidge,
+    Lasso,
+    LassoCV,
+    LinearRegression,
+    Ridge,
+    RidgeCV,
+)
 from sklearn.model_selection import KFold, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import QuantileTransformer, RobustScaler, StandardScaler
 from sklearn.utils import check_random_state
 
 
@@ -354,6 +362,48 @@ class RobustRegressor(BaseEstimator, RegressorMixin):
             predictions.append(pred)
         predictions = np.array(predictions)
         return np.mean(predictions, axis=0)
+
+
+def wrap(
+    model: BaseEstimator,
+    scale_kind: Literal["standard", "robust", "quantile", "id"] = "standard",
+    feats: Literal["bfs", "rfs", "id"] = "id",
+    outliers: Literal["robust", "id"] = "id",
+    isotonic: bool = False,
+) -> BaseEstimator:
+    scaled_model = None
+    if scale_kind == "standard":
+        scaled_model = Pipeline([("scaler", StandardScaler()), ("model", model)])
+    elif scale_kind == "robust":
+        scaled_model = Pipeline([("scaler", RobustScaler()), ("model", model)])
+    elif scale_kind == "quantile":
+        scaled_model = Pipeline([("scaler", QuantileTransformer()), ("model", model)])
+    elif scale_kind == "id":
+        scaled_model = model
+    else:
+        raise ValueError(f"Invalid scaling method: {scale_kind}")
+    feature_selected = None
+    if feats == "bfs":
+        feature_selected = BFS(scaled_model)
+    elif feats == "rfs":
+        feature_selected = RFS(scaled_model)
+    elif feats == "id":
+        feature_selected = scaled_model
+    else:
+        raise ValueError(f"Invalid feature selection method: {feats}")
+    outlier_removed = None
+    if outliers == "robust":
+        outlier_removed = RobustRegressor(feature_selected)
+    elif outliers == "id":
+        outlier_removed = feature_selected
+    else:
+        raise ValueError(f"Invalid outlier removal method: {outliers}")
+    final = None
+    if isotonic:
+        final = Iso(outlier_removed)
+    else:
+        final = outlier_removed
+    return final
 
 
 def test_backward_feature_stacking_regressor():

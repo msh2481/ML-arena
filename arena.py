@@ -4,13 +4,13 @@ from datetime import datetime
 from typing import Callable
 
 import linear_models
-
 import numpy as np
 import pandas as pd
 from beartype import beartype as typed
 from datasets import load_dataset, split_data
 from jaxtyping import Float
 from joblib import delayed, Parallel
+from loguru import logger
 from numpy import ndarray as ND
 from sklearn.base import BaseEstimator
 from tqdm.auto import tqdm
@@ -47,9 +47,12 @@ def get_metrics(
     bad_features: bool,
     outliers: bool,
 ) -> Float[ND, "n_players 3"]:
+    n_samples = X.shape[0]
+    test_size = 1 - 1 / (np.log(n_samples) - 1)
     X_train, y_train, X_test, y_test = split_data(
         X,
         y,
+        test_size=test_size,
         bad_features=bad_features,
         outliers=outliers,
     )

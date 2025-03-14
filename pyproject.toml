@@ -8,6 +8,7 @@ dependencies = [
     "beartype>=0.20.0",
     "ipykernel>=6.29.5",
     "jaxtyping>=0.2.38",
+    "lightgbm>=4.6.0",
     "loguru>=0.7.3",
     "matplotlib>=3.10.1",
     "numpy>=2.2.3",
@@ -16,4 +17,5 @@ dependencies = [
     "torch>=2.6.0",
     "tqdm>=4.67.1",
     "ucimlrepo>=0.0.7",
+    "xgboost>=2.1.4",
 ]
