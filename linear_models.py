@@ -105,16 +105,23 @@ def wrap(
 players = {
     # Classical methods
     "LinearRegression": lambda x, _: wrap(LinearRegression()),
-    "Ridge(1/(2n))": lambda x, _: wrap(Ridge(1 / (2 * len(x)))),
+    "Ridge": lambda x, _: wrap(Ridge(1 / (2 * len(x)))),
     "BayessianRidge": lambda x, _: wrap(BayesianRidge()),
-    "RidgeCV(cv=10)": lambda x, _: wrap(
-        RidgeCV(alphas=10 ** np.linspace(-4, 2, 20), cv=10)
-    ),
-    "LassoCV(cv=10)": lambda x, _: wrap(LassoCV(cv=10)),
     "ARDRegression": lambda x, _: wrap(ARDRegression()),
     # Modifications
     "Ridge": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="id"),
     "BFS(Ridge)": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="bfs"),
     "BFS(ARDRegression)": lambda x, _: wrap(ARDRegression(), feats="bfs"),
-    "BFS(BayessianRidge)": lambda x, _: wrap(BayesianRidge(), feats="bfs"),
+    # Isotonic methods
+    "IsoLinearRegression": lambda x, _: wrap(LinearRegression(), isotonic=True),
+    "IsoRidge": lambda x, _: wrap(Ridge(1 / (2 * len(x))), isotonic=True),
+    "IsoBayessianRidge": lambda x, _: wrap(BayesianRidge(), isotonic=True),
+    "IsoARDRegression": lambda x, _: wrap(ARDRegression(), isotonic=True),
+    "IsoRidge": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="id", isotonic=True),
+    "IsoBFS(Ridge)": lambda x, _: wrap(
+        Ridge(1 / (2 * len(x))), feats="bfs", isotonic=True
+    ),
+    "IsoBFS(ARDRegression)": lambda x, _: wrap(
+        ARDRegression(), feats="bfs", isotonic=True
+    ),
 }

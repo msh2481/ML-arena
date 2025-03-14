@@ -35,44 +35,49 @@ default_target_cols = {
 
 @typed
 def load_dataset(
-    name: str,
+    name: str, download: bool = False
 ) -> tuple[Float[ND, "n_samples n_features"], Float[ND, "n_samples ..."]]:
-    data = fetch_ucirepo(id=id_map[name])
-    X = data.data.features
-    # Drop duplicate columns
-    X = X.loc[:, ~X.columns.duplicated()]
-    y = data.data.targets
-    if isinstance(y, pd.DataFrame):
-        y = y[y.columns[0]]
-    metadata = data.metadata
-    variables = data.variables
-    if y is None and name in default_target_cols:
-        target_col = default_target_cols[name]
-        y = X[target_col].copy()
-        X = X.drop(columns=[target_col])
-    # Handle categorical features by encoding them
-    X_processed = X.copy()
-    for column in X_processed.columns:
-        if X_processed[column].dtype == "object":
-            le = LabelEncoder()
-            X_processed.loc[:, column] = le.fit_transform(X_processed[column])
-    # Remove features with only one unique value
-    columns_to_keep = []
-    for column in X_processed.columns:
-        if len(X_processed[column].unique()) >= 2:
-            columns_to_keep.append(column)
+    if download:
+        data = fetch_ucirepo(id=id_map[name])
+        X = data.data.features
+        # Drop duplicate columns
+        X = X.loc[:, ~X.columns.duplicated()]
+        y = data.data.targets
+        if isinstance(y, pd.DataFrame):
+            y = y[y.columns[0]]
+        metadata = data.metadata
+        variables = data.variables
+        if y is None and name in default_target_cols:
+            target_col = default_target_cols[name]
+            y = X[target_col].copy()
+            X = X.drop(columns=[target_col])
+        # Handle categorical features by encoding them
+        X_processed = X.copy()
+        for column in X_processed.columns:
+            if X_processed[column].dtype == "object":
+                le = LabelEncoder()
+                X_processed.loc[:, column] = le.fit_transform(X_processed[column])
+        # Remove features with only one unique value
+        columns_to_keep = []
+        for column in X_processed.columns:
+            if len(X_processed[column].unique()) >= 2:
+                columns_to_keep.append(column)
 
-    X_processed = X_processed[columns_to_keep]
-    X = X_processed.values.astype(np.float32)
-    assert isinstance(y, pd.Series)
-    if y.dtype == "object":
-        le = LabelEncoder()
-        y = le.fit_transform(y)
-    if isinstance(y, pd.Series):
-        y = y.values
-    y = y.astype(np.float32)
-    y = (y - y.mean()) / (y.std() + 1e-6)
-    return X, y
+        X_processed = X_processed[columns_to_keep]
+        X = X_processed.values.astype(np.float32)
+        assert isinstance(y, pd.Series)
+        if y.dtype == "object":
+            le = LabelEncoder()
+            y = le.fit_transform(y)
+        if isinstance(y, pd.Series):
+            y = y.values
+        y = y.astype(np.float32)
+        y = (y - y.mean()) / (y.std() + 1e-6)
+        return X, y
+    else:
+        X = np.load(f"data/{name}_X.npy")
+        y = np.load(f"data/{name}_y.npy")
+        return X, y
 
 
 def test_load_dataset():

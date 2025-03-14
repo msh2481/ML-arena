@@ -20,7 +20,7 @@ from sklearn.utils import check_random_state
 class Iso(BaseEstimator, RegressorMixin):
     def __init__(self, estimator: Any):
         self.estimator = estimator
-        self.isotonic = IsotonicRegression()
+        self.isotonic = IsotonicRegression(increasing=True, out_of_bounds="clip")
 
     def fit(self, X, y):
         self.estimator.fit(X, y)
