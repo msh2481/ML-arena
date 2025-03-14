@@ -4,6 +4,7 @@ from beartype import beartype as typed
 from jaxtyping import Float, Int
 from loguru import logger
 from numpy import ndarray as ND
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from ucimlrepo import fetch_ucirepo
 
@@ -62,6 +63,7 @@ def load_dataset(
     if isinstance(y, pd.Series):
         y = y.values
     y = y.astype(np.float32)
+    y = (y - y.mean()) / (y.std() + 1e-6)
     return X, y
 
 
@@ -111,6 +113,32 @@ def test_load_dataset():
         except Exception as e:
             print(f"Error loading dataset {dataset_name}: {e}")
             continue  # Continue to the next dataset instead of returning
+
+
+@typed
+def split_data(
+    X: Float[ND, "n_samples n_features"],
+    y: Float[ND, "n_samples"],
+    test_size: float = 0.25,
+    outliers: bool = False,
+    bad_features: bool = False,
+) -> tuple[
+    Float[ND, "n_samples n_features"],
+    Float[ND, "n_samples"],
+    Float[ND, "n_test n_features"],
+    Float[ND, "n_test"],
+]:
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size)
+    random_subset = lambda n, k: np.random.choice(n, k, replace=False)
+    shuffle = lambda x: x[np.random.permutation(len(x))]
+    n_samples, n_features = X_train.shape
+    if outliers:
+        outlier_indices = random_subset(n_samples, n_samples // 4)
+        y_train[outlier_indices] = shuffle(y_train[outlier_indices])
+    if bad_features:
+        bad_feature_indices = random_subset(n_features, n_features // 2)
+        X_train[:, bad_feature_indices] = shuffle(X_train[:, bad_feature_indices])
+    return X_train, y_train, X_test, y_test
 
 
 if __name__ == "__main__":

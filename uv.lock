@@ -302,7 +302,6 @@ dependencies = [
     { name = "jaxtyping" },
     { name = "loguru" },
     { name = "numpy" },
-    { name = "openskill" },
     { name = "scikit-learn" },
     { name = "tqdm" },
     { name = "ucimlrepo" },
@@ -315,7 +314,6 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.2.38" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "numpy", specifier = ">=2.2.3" },
-    { name = "openskill", specifier = ">=6.0.2" },
     { name = "scikit-learn", specifier = ">=1.6.1" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "ucimlrepo", specifier = ">=0.0.7" },
@@ -376,15 +374,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/53/43/c0f5411c7b3ea90adf341d05ace762dad8cb9819ef26093e27b15dd121ac/numpy-2.2.3-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:daf43a3d1ea699402c5a850e5313680ac355b4adc9770cd5cfc2940e7861f1bf", size = 17872920 },
     { url = "https://files.pythonhosted.org/packages/5b/57/6dbdd45ab277aff62021cafa1e15f9644a52f5b5fc840bc7591b4079fb58/numpy-2.2.3-cp313-cp313t-win32.whl", hash = "sha256:cf802eef1f0134afb81fef94020351be4fe1d6681aadf9c5e862af6602af64ef", size = 6346584 },
     { url = "https://files.pythonhosted.org/packages/97/9b/484f7d04b537d0a1202a5ba81c6f53f1846ae6c63c2127f8df869ed31342/numpy-2.2.3-cp313-cp313t-win_amd64.whl", hash = "sha256:aee2512827ceb6d7f517c8b85aa5d3923afe8fc7a57d028cffcd522f1c6fd082", size = 12706784 },
-]
-
-[[package]]
-name = "openskill"
-version = "6.0.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7f/7b/8bd870763a3eb72d8d075c4f43cee73ceed87947558ee393053a67d6563c/openskill-6.0.2.tar.gz", hash = "sha256:7241f6dcfffb3aa1be339fda479e608f35f127cce764e27df90a460733606d1d", size = 44197 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/cb/a7b67627f44ff4d32836efd32c52ce4a884c1afdd12a1ab1e0637dc2af65/openskill-6.0.2-py3-none-any.whl", hash = "sha256:d5edabe7308a74ace65bffb6eba0f0f9d8fa9ff4599eba6774c700d3f88f58cf", size = 45700 },
 ]
 
 [[package]]

@@ -10,7 +10,6 @@ dependencies = [
     "jaxtyping>=0.2.38",
     "loguru>=0.7.3",
     "numpy>=2.2.3",
-    "openskill>=6.0.2",
     "scikit-learn>=1.6.1",
     "tqdm>=4.67.1",
     "ucimlrepo>=0.0.7",
