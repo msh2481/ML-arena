@@ -1,0 +1,191 @@
+from typing import Any
+
+import numpy as np
+import torch
+from beartype import beartype as typed
+from beartype.typing import Literal
+from jaxtyping import Float, Int
+from loguru import logger
+from numpy import ndarray as ND
+from scipy.stats import norm as gaussian, t as student_t
+from sklearn.base import BaseEstimator, clone, RegressorMixin
+from sklearn.linear_model import LassoLars, Ridge, RidgeCV
+from sklearn.model_selection import KFold
+from sklearn.utils import check_random_state
+
+
+class FeatureStackingRegressor(BaseEstimator, RegressorMixin):
+    @typed
+    def __init__(
+        self,
+        estimator: Any,
+        n_estimators: int = 10,
+        max_features: float | int = 0.9,
+        random_state: int | None = None,
+        final_regressor: Any = RidgeCV(alphas=10 ** np.linspace(-4, 2, 10), cv=10),
+    ):
+        self.estimator = estimator
+        self.n_estimators = n_estimators
+        self.max_features = max_features
+        self.random_state = random_state
+        self.final_regressor = final_regressor
+
+    @typed
+    def fit(
+        self, X: Float[ND, "n d_in"] | torch.Tensor, y: Float[ND, "n"] | torch.Tensor
+    ):
+        if isinstance(X, torch.Tensor):
+            X = X.cpu().detach().numpy()
+        if isinstance(y, torch.Tensor):
+            y = y.cpu().detach().numpy()
+
+        n_samples, n_features = X.shape
+        if isinstance(self.max_features, float):
+            self.max_features = int(np.ceil(self.max_features * n_features))
+        # chance to cover all feature = (1 - (1 - r)^n_estimators)^n_features
+        # where r = max_features / n_features
+        # set 1 - (1 - r)^n_estimators = 0.95^(1/n_features)
+        # r  = 1 - (1 - 0.95^(1/n_features))^(1/n_estimators)
+        prob_for_one = 0.95 ** (1 / n_features)
+        lower_bound_ratio = 1 - ((1 - prob_for_one) ** (1 / self.n_estimators))
+        lower_bound = int(np.ceil(n_features * lower_bound_ratio))
+        if self.max_features < lower_bound:
+            logger.warning(
+                f"Max features {self.max_features} -> {lower_bound} to cover all features"
+            )
+            self.max_features = lower_bound
+        random_state = check_random_state(self.random_state)
+        kf = KFold(n_splits=2, shuffle=True, random_state=random_state)
+        self.estimators_ = []
+        self.feature_indices_ = []
+        for i in range(self.n_estimators):
+            # Sample features until we get a new subset
+            feature_indices = None
+            max_attempts = 10  # Avoid infinite loop
+            for _ in range(max_attempts):
+                candidate_indices = random_state.choice(
+                    n_features, size=self.max_features, replace=False
+                )
+                candidate_indices = np.sort(candidate_indices)
+                if feature_indices is None or all(
+                    not np.array_equal(candidate_indices, prev_indices)
+                    for prev_indices in self.feature_indices_
+                ):
+                    feature_indices = candidate_indices
+                    break
+            # If we couldn't find a new subset after max attempts, just use the last one
+            if feature_indices is None:
+                feature_indices = candidate_indices
+            self.feature_indices_.append(feature_indices)
+            estimator = clone(self.estimator)
+            estimator.fit(X[:, feature_indices], y)
+            self.estimators_.append(estimator)
+
+        meta_features = np.zeros((n_samples, self.n_estimators))
+        for train_idx, test_idx in kf.split(X):
+            X_train, X_test = X[train_idx], X[test_idx]
+            y_train = y[train_idx]
+            for j in range(self.n_estimators):
+                feature_indices = self.feature_indices_[j]
+                temp_estimator = clone(self.estimator)
+                temp_estimator.fit(X_train[:, feature_indices], y_train)
+                meta_features[test_idx, j] = temp_estimator.predict(
+                    X_test[:, feature_indices]
+                )
+        # self.meta_estimator_ = clone(self.final_regressor)
+        self.meta_estimator_ = Ridge(alpha=1 / (2 * len(meta_features)), positive=True)
+        self.meta_estimator_.fit(meta_features, y)
+        return self
+
+    @typed
+    def predict(self, X: Float[ND, "m d_in"] | torch.Tensor) -> Float[ND, "m"]:
+        if isinstance(X, torch.Tensor):
+            X = X.cpu().detach().numpy()
+
+        meta_features = np.zeros((X.shape[0], self.n_estimators))
+        for i, (estimator, feature_indices) in enumerate(
+            zip(self.estimators_, self.feature_indices_)
+        ):
+            meta_features[:, i] = estimator.predict(X[:, feature_indices])
+        return self.meta_estimator_.predict(meta_features)
+
+
+class RobustRegressor(BaseEstimator, RegressorMixin):
+    @typed
+    def __init__(
+        self,
+        estimator: Any,
+        iterations: int = 10,
+    ):
+        self.estimator = estimator
+        self.iterations = iterations
+
+    @typed
+    def _compute_sample_probs(self) -> np.ndarray:
+        iters = self.sample_errors.shape[1]
+        sample_mse = np.mean(self.sample_errors**2, axis=1)
+        mean_error = np.median(sample_mse) + 1e-8
+        weights = 1.0 / (iters * sample_mse + 2 * mean_error)
+        weights /= np.max(weights)
+        return weights
+
+    @typed
+    def _bootstrap_sample(
+        self, indices: Int[ND, "n_samples"], k: int = 6
+    ) -> Int[ND, "n_samples"]:
+        if self.sample_probs is None:
+            return indices
+        selected = self.sample_probs[indices]
+        counts = (k * selected / selected.max()).astype(np.int32)
+        # Take indices[i] counts[i] times
+        return np.repeat(indices, counts)
+
+    @typed
+    def fit(self, X: np.ndarray | torch.Tensor, y: np.ndarray | torch.Tensor):
+        if isinstance(X, torch.Tensor):
+            X = X.cpu().detach().numpy()
+        if isinstance(y, torch.Tensor):
+            y = y.cpu().detach().numpy()
+
+        self.n_samples, self.n_features = X.shape
+        self.sample_errors = np.zeros((self.n_samples, 0))
+        self.sample_probs = None
+        self.estimators = []
+
+        for i_it in range(self.iterations):
+            kf = KFold(n_splits=2, shuffle=True, random_state=i_it)
+            current_sample_errors = np.zeros((self.n_samples))
+            for fold, (train_idx, test_idx) in enumerate(kf.split(X)):
+                bootstrap_indices = self._bootstrap_sample(train_idx)
+                X_train, X_test = X[bootstrap_indices], X[test_idx]
+                y_train, y_test = y[bootstrap_indices], y[test_idx]
+                current_estimator = clone(self.estimator)
+                current_estimator.fit(X_train, y_train)
+                y_pred = current_estimator.predict(X_test)
+                current_sample_errors[test_idx] = y_test - y_pred
+            self.sample_errors = np.concatenate(
+                [self.sample_errors, current_sample_errors[:, None]], axis=1
+            )
+            # Remove 20% of the oldest sample errors
+            if (i_it + 1) % 5 == 0:
+                self.sample_errors = self.sample_errors[:, 1:]
+            self.sample_probs = self._compute_sample_probs()
+            self.sample_probs = self.sample_probs
+            full_idx = self._bootstrap_sample(np.arange(self.n_samples))
+            current_estimator = clone(self.estimator)
+            current_estimator.fit(X[full_idx], y[full_idx])
+            self.estimators.append(current_estimator)
+        return self
+
+    @typed
+    def predict(self, X: np.ndarray | torch.Tensor) -> np.ndarray:
+        """Predict using the ensemble of estimators."""
+        if isinstance(X, torch.Tensor):
+            X = X.cpu().detach().numpy()
+        assert self.estimators, "Model not fitted yet or no estimators in ensemble"
+        predictions = []
+        for i, estimator in enumerate(self.estimators):
+            pred = estimator.predict(X)
+            predictions.append(pred)
+        predictions = np.array(predictions)
+        return np.mean(predictions, axis=0)

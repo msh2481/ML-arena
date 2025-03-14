@@ -4,6 +4,14 @@ from beartype import beartype as typed
 from jaxtyping import Float, Int
 from loguru import logger
 from numpy import ndarray as ND
+from sklearn.linear_model import (
+    ARDRegression,
+    Lasso,
+    LassoCV,
+    LassoLarsCV,
+    LinearRegression,
+    Ridge,
+)
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from ucimlrepo import fetch_ucirepo
@@ -141,5 +149,34 @@ def split_data(
     return X_train, y_train, X_test, y_test
 
 
+def test_split_data():
+    X, y = load_dataset("computer_hardware")
+    X_train, y_train, X_test, y_test = split_data(
+        X,
+        y,
+        outliers=False,
+        bad_features=False,
+    )
+    correlations = []
+    for i in range(X_train.shape[1]):
+        corr = np.corrcoef(X_train[:, i], y_train)[0, 1]
+        correlations.append(corr)
+    correlations = np.array(correlations)
+    correlations = (100 * correlations).astype(int)
+    print(correlations)
+    model = Lasso(alpha=1.0)
+    model.fit(X_train, y_train)
+    pred = model.predict(X_test)
+    ard_coefs = model.coef_
+    print(np.square(pred - y_test).mean())
+    model = LassoLarsCV()
+    model.fit(X_train, y_train)
+    pred = model.predict(X_test)
+    ridge_coefs = model.coef_
+    print(np.square(pred - y_test).mean())
+    print(ard_coefs)
+    print(ridge_coefs)
+
+
 if __name__ == "__main__":
-    test_load_dataset()
+    test_split_data()

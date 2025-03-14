@@ -1,9 +1,13 @@
+import contextlib
+import os
 from collections import defaultdict
+from datetime import datetime
 from typing import Any, Callable
 
 import linear_models
 
 import numpy as np
+import pandas as pd
 from beartype import beartype as typed
 from datasets import id_map, load_dataset, split_data
 from jaxtyping import Float, Int
@@ -56,11 +60,12 @@ class Arena:
 
     @typed
     def get_scores(self) -> Float[ND, "n_players k"]:
-        full_coef = np.concatenate([model.coef_ for model in self.model], axis=1)
-        first_half = full_coef[: self.n_players]
-        second_half = full_coef[self.n_players :]
+        full_coef = np.concatenate([model.coef_ for model in self.model], axis=0)
+        assert full_coef.shape == (self.d_outcomes, 2 * self.n_players)
+        first_half = full_coef[:, : self.n_players].T
+        second_half = full_coef[:, self.n_players :].T
         assert np.allclose(first_half, -second_half)
-        return first_half
+        return np.round(first_half * 400)
 
     @typed
     def predict_win(
@@ -72,50 +77,145 @@ class Arena:
         return np.stack([model.predict_proba(X)[:, 1] for model in self.model], axis=1)
 
 
+class Silencer:
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
+        self.null_file = None
+        self.stdout_redirector = None
+        self.stderr_redirector = None
+
+    def __enter__(self):
+        if not self.verbose:
+            self.null_file = open(os.devnull, "w")
+            self.stdout_redirector = contextlib.redirect_stdout(self.null_file)
+            self.stderr_redirector = contextlib.redirect_stderr(self.null_file)
+            self.stdout_redirector.__enter__()
+            self.stderr_redirector.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if not self.verbose:
+            self.stderr_redirector.__exit__(exc_type, exc_val, exc_tb)
+            self.stdout_redirector.__exit__(exc_type, exc_val, exc_tb)
+            self.null_file.close()
+
+
 @typed
-def compete(
+def get_metrics(
     X: Float[ND, "n_samples n_features"],
     y: Float[ND, "n_samples"],
     players: list[Callable[[ND, ND, ND], BaseEstimator]],
-) -> Int[ND, "n_2 k"]:
-    X_train, y_train, X_test, y_test = split_data(X, y)
+    bad_features: bool,
+    outliers: bool,
+) -> Float[ND, "n_players 3"]:
+    X_train, y_train, X_test, y_test = split_data(
+        X,
+        y,
+        bad_features=bad_features,
+        outliers=outliers,
+    )
     mses = []
     maes = []
     profits = []
     # Metrics
     for player_fn in players:
         player = player_fn(X_train, y_train)
-        player.fit(X_train, y_train)
+        with Silencer():
+            player.fit(X_train, y_train)
         p = player.predict(X_test)
-        mse = np.square(p - y_test).mean()
-        mae = np.abs(p - y_test).mean()
-        profit = (y_test * (p > 0)).mean()
-        mses.append(mse)
-        maes.append(mae)
-        profits.append(profit)
-    mses = np.array(mses)
-    maes = np.array(maes)
-    profits = np.array(profits)
-    # Outcomes
-    first, second = np.mgrid[: len(players), : len(players)]
-    first = first.flatten()
-    second = second.flatten()
-    return np.stack(
-        [
-            mse[first] < mse[second],
-            mae[first] < mae[second],
-            profits[first] > profits[second],
-        ],
-        axis=1,
-    ).astype(int)
+        current_mse = np.square(p - y_test).mean()
+        current_mae = np.abs(p - y_test).mean()
+        current_profit = (y_test * (p > 0)).mean()
+        mses.append(current_mse)
+        maes.append(current_mae)
+        profits.append(current_profit)
+    # Noise to break ties
+    neg_mses = -np.array(mses) + np.random.randn(len(mses)) * 1e-9
+    neg_maes = -np.array(maes) + np.random.randn(len(maes)) * 1e-9
+    profits = np.array(profits) + np.random.randn(len(profits)) * 1e-9
+    return np.stack([neg_mses, neg_maes, profits], axis=1)
 
 
-def run_ml_arena(n_matches: int = 10**4, n_bootstrap: int = 10**3):
+@typed
+def compete(
+    X: Float[ND, "n_samples n_features"],
+    y: Float[ND, "n_samples"],
+    players: list[Callable[[ND, ND, ND], BaseEstimator]],
+    matches: int,
+    bad_features: bool,
+    outliers: bool,
+) -> tuple[Int[ND, "n_2"], Int[ND, "n_2"], Int[ND, "n_2 k"]]:
+    metrics = [
+        get_metrics(X, y, players, bad_features, outliers) for _ in tqdm(range(matches))
+    ]
+    metrics = np.stack(metrics, axis=0)
+    assert metrics.shape == (matches, len(players), 3)
+    firsts = []
+    seconds = []
+    outcomes = []
+    for i in range(len(players)):
+        for j in range(i + 1, len(players)):
+            current_outcomes = (
+                metrics[:, np.newaxis, i, :] > metrics[np.newaxis, :, j, :]
+            ).reshape(-1, 3)
+            i_repeated = np.full(len(current_outcomes), i)
+            j_repeated = np.full(len(current_outcomes), j)
+            # i vs j
+            firsts.append(i_repeated)
+            seconds.append(j_repeated)
+            outcomes.append(current_outcomes)
+            # j vs i
+            firsts.append(j_repeated)
+            seconds.append(i_repeated)
+            outcomes.append(1 - current_outcomes)
+    firsts = np.concatenate(firsts, axis=0)
+    seconds = np.concatenate(seconds, axis=0)
+    outcomes = np.concatenate(outcomes, axis=0)
+    return firsts, seconds, outcomes
+
+
+def run_ml_arena(
+    datasets: list[str],
+    bad_features: bool,
+    outliers: bool,
+    matches: int,
+):
     player_dict = {**linear_models.players}
     player_names = list(player_dict.keys())
     players = [player_dict[name] for name in player_names]
-    X, y = load_dataset("computer_hardware")
-    compete(X, y, players)
+    firsts = []
+    seconds = []
+    outcomes = []
+    for dataset in datasets:
+        X, y = load_dataset(dataset)
+        first, second, outcome = compete(
+            X,
+            y,
+            players,
+            matches=matches,
+            bad_features=bad_features,
+            outliers=outliers,
+        )
+        firsts.append(first)
+        seconds.append(second)
+        outcomes.append(outcome)
+    firsts = np.concatenate(firsts, axis=0)
+    seconds = np.concatenate(seconds, axis=0)
+    outcomes = np.concatenate(outcomes, axis=0)
+    arena = Arena(len(players), outcomes.shape[1])
+    arena.add_data(firsts, seconds, outcomes)
+    arena.fit()
+    scores = arena.get_scores()
+    score_names = ["MSE", "MAE", "Profit"]
+    scores_df = pd.DataFrame(data=scores, index=player_names, columns=score_names)
+    scores_df.sort_values(by="MSE", ascending=False, inplace=True)
+    print(f"Datasets: {datasets}")
+    print(f"Bad features: {bad_features}")
+    print(f"Outliers: {outliers}")
+    print(f"{matches} all-vs-all matches for each of {len(datasets)} datasets")
+    print("Elo ratings for all metrics, sorted by MSE ratings:")
+    print(scores_df)
+    return scores_df
 
 
 def test_new_arena():
@@ -149,5 +249,21 @@ def test_new_arena():
 
 
 if __name__ == "__main__":
-    # run_ml_arena()
-    test_new_arena()
+    datasets = [
+        "student_performance",
+        "concrete",
+        "computer_hardware",
+        "kidney_disease",
+        "fertility",
+        "algerian_forest_fires",
+        "airfoil_self_noise",
+        "istanbul_stock_exchange",
+    ]
+    df = run_ml_arena(
+        datasets=datasets,
+        bad_features=False,
+        outliers=False,
+        matches=10,
+    )
+    filename = f"arena_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    df.to_csv(filename)
