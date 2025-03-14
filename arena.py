@@ -147,14 +147,17 @@ def compete(
     dataset: str,
     player_names: list[str],
 ) -> tuple[Int[ND, "n_2"], Int[ND, "n_2"], Int[ND, "n_2 k"]]:
-    metrics = [
-        get_metrics(X, y, players, bad_features, outliers) for _ in tqdm(range(matches))
-    ]
+    metrics = Parallel(n_jobs=-1)(
+        delayed(get_metrics)(X, y, players, bad_features, outliers)
+        for _ in tqdm(range(matches))
+    )
     metrics = np.stack(metrics, axis=0)
     df = pd.DataFrame(
         data=metrics.mean(axis=0), index=player_names, columns=["MSE", "MAE", "Profit"]
     )
-    df.to_csv(f"results/metrics_{dataset}.csv")
+    df.to_csv(
+        f"results/metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{dataset}.csv"
+    )
     assert metrics.shape == (matches, len(players), 3)
     firsts = []
     seconds = []
@@ -269,7 +272,7 @@ if __name__ == "__main__":
     ]
     df = run_ml_arena(
         datasets=datasets,
-        bad_features=False,
+        bad_features=True,
         outliers=True,
         matches=10,
     )

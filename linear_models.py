@@ -1,5 +1,7 @@
 import numpy as np
+from beartype.typing import Literal
 from sklearn.base import BaseEstimator
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import (
     ARDRegression,
     Lasso,
@@ -9,19 +11,50 @@ from sklearn.linear_model import (
     RidgeCV,
 )
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import RobustScaler, StandardScaler
-from wrappers import BFS, RFS, RobustRegressor
+from sklearn.preprocessing import QuantileTransformer, RobustScaler, StandardScaler
+from wrappers import BFS, Iso, RFS, RobustRegressor
 
 
-def scale(model: BaseEstimator, kind: str = "standard") -> BaseEstimator:
-    if kind == "standard":
-        return Pipeline([("scaler", StandardScaler()), ("model", model)])
-    elif kind == "robust":
-        return Pipeline([("scaler", RobustScaler()), ("model", model)])
-    elif kind == "id":
-        return model
+def wrap(
+    model: BaseEstimator,
+    scale_kind: Literal["standard", "robust", "quantile", "id"] = "standard",
+    feats: Literal["bfs", "rfs", "id"] = "id",
+    outliers: Literal["robust", "id"] = "id",
+    isotonic: bool = False,
+) -> BaseEstimator:
+    scaled_model = None
+    if scale_kind == "standard":
+        scaled_model = Pipeline([("scaler", StandardScaler()), ("model", model)])
+    elif scale_kind == "robust":
+        scaled_model = Pipeline([("scaler", RobustScaler()), ("model", model)])
+    elif scale_kind == "quantile":
+        scaled_model = Pipeline([("scaler", QuantileTransformer()), ("model", model)])
+    elif scale_kind == "id":
+        scaled_model = model
     else:
-        raise ValueError(f"Invalid scaling method: {kind}")
+        raise ValueError(f"Invalid scaling method: {scale_kind}")
+    feature_selected = None
+    if feats == "bfs":
+        feature_selected = BFS(scaled_model)
+    elif feats == "rfs":
+        feature_selected = RFS(scaled_model)
+    elif feats == "id":
+        feature_selected = scaled_model
+    else:
+        raise ValueError(f"Invalid feature selection method: {feats}")
+    outlier_removed = None
+    if outliers == "robust":
+        outlier_removed = RobustRegressor(feature_selected)
+    elif outliers == "id":
+        outlier_removed = feature_selected
+    else:
+        raise ValueError(f"Invalid outlier removal method: {outliers}")
+    final = None
+    if isotonic:
+        final = Iso(outlier_removed)
+    else:
+        final = outlier_removed
+    return final
 
 
 # players = {
@@ -69,14 +102,28 @@ def scale(model: BaseEstimator, kind: str = "standard") -> BaseEstimator:
 # ]
 
 players = {
-    "Ridge(1/(2n))": lambda x, _: scale(Ridge(1 / (2 * len(x)))),
-    "ARDRegression": lambda x, _: scale(ARDRegression()),
-    "BFS(inner, cv=3)": lambda x, _: scale(BFS(Ridge(1 / (2 * len(x))), cv=3)),
-    "BFS(inner, cv=5)": lambda x, _: scale(BFS(Ridge(1 / (2 * len(x))), cv=5)),
-    "RFS(inner)": lambda x, _: scale(RFS(Ridge(1 / (2 * len(x))))),
-    "LinearRegression": lambda x, _: scale(LinearRegression()),
-    "RidgeCV(cv=10)": lambda x, _: scale(
+    # Classical methods
+    "LinearRegression": lambda x, _: wrap(LinearRegression()),
+    "Ridge(1/(2n))": lambda x, _: wrap(Ridge(1 / (2 * len(x)))),
+    "RidgeCV(cv=10)": lambda x, _: wrap(
         RidgeCV(alphas=10 ** np.linspace(-4, 2, 20), cv=10)
     ),
-    "LassoCV(cv=10)": lambda x, _: scale(LassoCV(cv=10)),
+    "LassoCV(cv=10)": lambda x, _: wrap(LassoCV(cv=10)),
+    "ARDRegression": lambda x, _: wrap(ARDRegression()),
+    # Modifications
+    "Ridge": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="id", outliers="id"),
+    "Ridge+BFS": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="bfs", outliers="id"),
+    # "Ridge+RFS": lambda x, _: wrap(Ridge(1 / (2 * len(x))), feats="rfs", outliers="id"),
+    # "Ridge+Robust": lambda x, _: wrap(
+    #     Ridge(1 / (2 * len(x))), feats="id", outliers="robust"
+    # ),
+    # "Ridge+BFS+Robust": lambda x, _: wrap(
+    #     Ridge(1 / (2 * len(x))), feats="bfs", outliers="robust"
+    # ),
+    # "ARDRegression+Robust": lambda x, _: wrap(
+    #     ARDRegression(), feats="id", outliers="robust"
+    # ),
+    # "Ridge+RFS+Robust": lambda x, _: wrap(
+    #     Ridge(1 / (2 * len(x))), feats="rfs", outliers="robust"
+    # ),
 }

@@ -9,11 +9,26 @@ from loguru import logger
 from numpy import ndarray as ND
 from scipy.stats import norm as gaussian, t as student_t
 from sklearn.base import BaseEstimator, clone, RegressorMixin
-from sklearn.linear_model import LassoLars, Ridge, RidgeCV
+from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import ARDRegression, Lasso, LassoCV, Ridge, RidgeCV
 from sklearn.model_selection import KFold, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import check_random_state
+
+
+class Iso(BaseEstimator, RegressorMixin):
+    def __init__(self, estimator: Any):
+        self.estimator = estimator
+        self.isotonic = IsotonicRegression()
+
+    def fit(self, X, y):
+        self.estimator.fit(X, y)
+        self.isotonic.fit(self.estimator.predict(X), y)
+        return self
+
+    def predict(self, X):
+        return self.isotonic.predict(self.estimator.predict(X))
 
 
 class BFS(BaseEstimator, RegressorMixin):
@@ -21,11 +36,12 @@ class BFS(BaseEstimator, RegressorMixin):
     def __init__(
         self,
         estimator: Any,
-        cv: int = 2,
+        cv: int = 5,
         use_scaling: bool = True,
         use_positive: bool = True,
         use_intercept: bool = False,
-        use_ridge: bool = True,
+        add_singles: bool = False,
+        final: Literal["ridge", "lasso", "lasso_cv", "ard"] = "ard",
     ):
         self.estimator = estimator
         self.estimators_ = []
@@ -34,7 +50,8 @@ class BFS(BaseEstimator, RegressorMixin):
         self.use_scaling = use_scaling
         self.use_positive = use_positive
         self.use_intercept = use_intercept
-        self.use_ridge = use_ridge
+        self.add_singles = add_singles
+        self.final = final
 
     @typed
     def fit(
@@ -47,16 +64,21 @@ class BFS(BaseEstimator, RegressorMixin):
 
         n_samples, n_features = X.shape
         # Fit estimator for each feature separately and compute its cross-validated MSE
-        errors = np.zeros((n_features, n_samples))
+        meta_features_single = np.zeros((n_samples, n_features))
+        errors_single = np.zeros((n_features, n_samples))
         for i in range(n_features):
             kf = KFold(n_splits=self.cv, shuffle=False)
             for train_idx, test_idx in kf.split(X):
-                X_train, X_test = X[train_idx, i : i + 1], X[test_idx, i : i + 1]
+                X_train, X_test = X[train_idx][:, [i]], X[test_idx][:, [i]]
+                assert X_train.shape == (len(train_idx), 1)
+                assert X_test.shape == (len(test_idx), 1)
                 y_train, y_test = y[train_idx], y[test_idx]
                 estimator = clone(self.estimator)
                 estimator.fit(X_train, y_train)
-                errors[i, test_idx] = estimator.predict(X_test) - y_test
-        mse = np.mean(errors**2, axis=1)
+                pred = estimator.predict(X_test)
+                meta_features_single[test_idx, i] = pred
+                errors_single[i, test_idx] = y_test - pred
+        mse = np.mean(errors_single**2, axis=1)
         # Sort features by increasing MSE and train estimator on every prefix
         sorted_indices = np.argsort(mse)
         for i in range(1, n_features + 1):
@@ -78,28 +100,48 @@ class BFS(BaseEstimator, RegressorMixin):
                 estimator = clone(self.estimator)
                 estimator.fit(X_train, y_train)
                 meta_features[test_idx, i] = estimator.predict(X_test)
+        if self.add_singles:
+            meta_features = np.concatenate(
+                [meta_features, meta_features_single], axis=1
+            )
+            for i in range(n_features):
+                estimator = clone(self.estimator)
+                estimator.fit(X[:, [i]], y)
+                self.estimators_.append(estimator)
+                self.feature_indices_.append([i])
+
+        if self.final == "ridge":
+            inner = Ridge(
+                alpha=1 / (2 * len(meta_features)),
+                positive=self.use_positive,
+                fit_intercept=self.use_intercept,
+            )
+        elif self.final == "lasso":
+            inner = Lasso(
+                alpha=1 / (2 * len(meta_features)),
+                positive=self.use_positive,
+                fit_intercept=self.use_intercept,
+            )
+        elif self.final == "lasso_cv":
+            inner = LassoCV(
+                cv=self.cv, positive=self.use_positive, fit_intercept=self.use_intercept
+            )
+        elif self.final == "ard":
+            inner = ARDRegression(fit_intercept=self.use_intercept)
+        else:
+            raise ValueError(f"Invalid final model: {self.final}")
         if self.use_scaling:
             self.meta_estimator_ = Pipeline(
                 [
                     ("scaler", StandardScaler()),
                     (
                         "estimator",
-                        Ridge(
-                            alpha=(
-                                1 / (2 * len(meta_features)) if self.use_ridge else 1e-9
-                            ),
-                            positive=self.use_positive,
-                            fit_intercept=self.use_intercept,
-                        ),
+                        inner,
                     ),
                 ]
             )
         else:
-            self.meta_estimator_ = Ridge(
-                alpha=1 / (2 * len(meta_features)) if self.use_ridge else 1e-9,
-                positive=self.use_positive,
-                fit_intercept=self.use_intercept,
-            )
+            self.meta_estimator_ = inner
         self.meta_estimator_.fit(meta_features, y)
         return self
 
@@ -238,7 +280,7 @@ class RobustRegressor(BaseEstimator, RegressorMixin):
     def __init__(
         self,
         estimator: Any,
-        iterations: int = 10,
+        iterations: int = 5,
     ):
         self.estimator = estimator
         self.iterations = iterations
@@ -317,7 +359,7 @@ class RobustRegressor(BaseEstimator, RegressorMixin):
 def test_backward_feature_stacking_regressor():
     X = np.random.randn(100, 10)
     y = np.random.randn(100)
-    model = BFS(Ridge())
+    model = BFS(Ridge(), add_singles=True)
     model.fit(X, y)
     pred = model.predict(X)
     assert pred.shape == (100,)

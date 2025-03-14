@@ -178,5 +178,13 @@ def test_split_data():
     print(ridge_coefs)
 
 
+def save_all_datasets():
+    for dataset_name in id_map.keys():
+        X, y = load_dataset(dataset_name)
+        np.save(f"data/{dataset_name}_X.npy", X)
+        np.save(f"data/{dataset_name}_y.npy", y)
+
+
 if __name__ == "__main__":
-    test_split_data()
+    # test_split_data()
+    save_all_datasets()
