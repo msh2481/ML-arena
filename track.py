@@ -9,7 +9,6 @@ import pandas as pd
 from beartype import beartype as typed
 from jaxtyping import Float, Int
 from numpy import ndarray as ND
-from scipy.ndimage import gaussian_filter1d
 
 
 @typed
@@ -58,32 +57,64 @@ def load_arena_files() -> tuple[list[datetime], dict[str, dict[str, list[float]]
 
 
 @typed
+def compute_running_stats(
+    data: Float[ND, "n"], window_size: int = 5
+) -> tuple[Float[ND, "n"], Float[ND, "n"]]:
+    """Compute running mean and standard deviation with specified window size."""
+    n = len(data)
+    running_mean = np.zeros_like(data)
+    running_std = np.zeros_like(data)
+
+    for i in range(n):
+        start = max(0, i - window_size + 1)
+        window = data[start : i + 1]
+        running_mean[i] = np.mean(window)
+        running_std[i] = (
+            np.std(window, ddof=1) / np.sqrt(len(window)) if len(window) > 1 else 0
+        )
+
+    return running_mean, running_std
+
+
+@typed
 def plot_ratings(
     timestamps: list[datetime], ratings_by_method: dict[str, dict[str, list[float]]]
 ) -> None:
     """Plot ratings over time for each metric as subplots in a single figure."""
     metrics = list(next(iter(ratings_by_method.values())).keys())
-
-    # Convert timestamps to numerical format for plotting
-    x = np.array(
-        [(t - timestamps[0]).total_seconds() / 60 for t in timestamps]
-    )  # minutes
-
-    # Create a figure with subplots (1 row, 3 columns)
+    x = np.array(timestamps)
     fig, axes = plt.subplots(1, len(metrics), figsize=(24, 12))
+    methods_with_mse_ratings = []
+    for method, metrics_data in ratings_by_method.items():
+        y_raw = metrics_data["MSE"]
+        mean_rating = int(np.mean(y_raw))
+        methods_with_mse_ratings.append((mean_rating, method))
+    methods_with_mse_ratings.sort(reverse=True)
 
     for i, metric in enumerate(metrics):
         ax = axes[i]
 
-        for method, metrics_data in ratings_by_method.items():
+        for _, method in methods_with_mse_ratings:
+            metrics_data = ratings_by_method[method]
             if len(metrics_data[metric]) == len(timestamps):
                 y_raw = np.array(metrics_data[metric])
+                mean_rating = int(np.mean(y_raw))
+                std_rating = int(np.std(y_raw, ddof=1) / np.sqrt(len(y_raw)))
+                label = f"{method} ({mean_rating}±{std_rating})"
 
-                # Apply Gaussian filter to smooth the data
                 # Only apply if we have enough data points
                 if len(y_raw) > 3:
-                    y_smooth = gaussian_filter1d(y_raw, sigma=2.0)
-                    ax.plot(x, y_smooth, marker="o", label=method, lw=1, ms=2)
+                    # Compute running mean and standard deviation
+                    y_mean, y_std = compute_running_stats(y_raw, window_size=5)
+
+                    # Plot the mean line
+                    (line,) = ax.plot(x, y_mean, label=label, lw=2)
+                    color = line.get_color()
+
+                    # Plot the standard deviation band
+                    ax.fill_between(
+                        x, y_mean - y_std, y_mean + y_std, alpha=0.2, color=color
+                    )
 
                     # Plot original data as light dots
                     ax.plot(
@@ -92,17 +123,15 @@ def plot_ratings(
                         "o",
                         alpha=0.3,
                         markersize=3,
-                        color=ax.lines[-1].get_color(),
+                        color=color,
                     )
                 else:
-                    ax.plot(x, y_raw, marker="o", label=method)
+                    ax.plot(x, y_raw, marker="o", label=label)
 
         ax.set_title(f"{metric} Ratings")
-        ax.set_xlabel("Time (minutes since first run)")
+        ax.set_xlabel("Time")
         ax.set_ylabel("Elo Rating")
         ax.grid(True)
-
-    # Add a common legend at the bottom
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles, labels, loc="lower center", ncol=len(labels), bbox_to_anchor=(0.5, 0)
