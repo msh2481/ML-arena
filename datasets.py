@@ -18,7 +18,6 @@ id_map = {
     "istanbul_stock_exchange": 247,
 }
 
-# Default target columns for datasets where target_col is None
 default_target_cols = {
     "computer_hardware": "ERP",
     "istanbul_stock_exchange": "ISE",
@@ -29,7 +28,6 @@ default_target_cols = {
 def load_dataset(
     name: str,
 ) -> tuple[Float[ND, "n_samples n_features"], Float[ND, "n_samples ..."]]:
-    logger.info(f"Loading dataset {name}")
     data = fetch_ucirepo(id=id_map[name])
     X = data.data.features
     # Drop duplicate columns
@@ -39,26 +37,25 @@ def load_dataset(
         y = y[y.columns[0]]
     metadata = data.metadata
     variables = data.variables
-    # logger.info(f"Metadata: {metadata}")
-    # logger.info(f"Variables: {variables}")
-
     if y is None and name in default_target_cols:
         target_col = default_target_cols[name]
         y = X[target_col].copy()
         X = X.drop(columns=[target_col])
-
-    logger.info(f"X: {type(X)} {X.shape} {X.columns} | y: {type(y)} {y.shape}")
     # Handle categorical features by encoding them
     X_processed = X.copy()
     for column in X_processed.columns:
         if X_processed[column].dtype == "object":
             le = LabelEncoder()
             X_processed.loc[:, column] = le.fit_transform(X_processed[column])
+    # Remove features with only one unique value
+    columns_to_keep = []
+    for column in X_processed.columns:
+        if len(X_processed[column].unique()) >= 2:
+            columns_to_keep.append(column)
 
-    # Convert pandas DataFrames to NumPy arrays
+    X_processed = X_processed[columns_to_keep]
     X = X_processed.values.astype(np.float32)
     assert isinstance(y, pd.Series)
-
     if y.dtype == "object":
         le = LabelEncoder()
         y = le.fit_transform(y)
@@ -72,33 +69,41 @@ def test_load_dataset():
     for dataset_name in id_map.keys():
         try:
             X, y = load_dataset(dataset_name)
-
-            # Check that X and y are numpy arrays
             assert isinstance(X, np.ndarray), f"{dataset_name}: X is not a numpy array"
             assert isinstance(y, np.ndarray), f"{dataset_name}: y is not a numpy array"
-
-            # Check that X and y contain float values
             assert np.issubdtype(
                 X.dtype, np.floating
             ), f"{dataset_name}: X does not contain float values"
             assert np.issubdtype(
                 y.dtype, np.floating
             ), f"{dataset_name}: y does not contain float values"
-
-            # Check shapes
             assert X.ndim == 2, f"{dataset_name}: X is not 2-dimensional"
-            assert y.ndim <= 2, f"{dataset_name}: y has more than 2 dimensions"
-
-            # Check that X and y have the same number of samples
+            assert y.ndim == 1, f"{dataset_name}: y is not 1-dimensional"
             n_samples = X.shape[0]
-            if y.ndim == 1:
+            assert (
+                y.shape[0] == n_samples
+            ), f"{dataset_name}: X and y have different number of samples"
+            assert not np.any(np.isnan(X)), f"{dataset_name}: X contains NaN values"
+            assert not np.any(np.isnan(y)), f"{dataset_name}: y contains NaN values"
+            assert not np.any(
+                np.isinf(X)
+            ), f"{dataset_name}: X contains infinite values"
+            assert not np.any(
+                np.isinf(y)
+            ), f"{dataset_name}: y contains infinite values"
+            assert np.all(X >= -1e9) and np.all(
+                X <= 1e9
+            ), f"{dataset_name}: X contains values outside of [-1e9, 1e9]"
+            assert np.all(y >= -1e9) and np.all(
+                y <= 1e9
+            ), f"{dataset_name}: y contains values outside of [-1e9, 1e9]"
+            for i in range(X.shape[1]):
                 assert (
-                    y.shape[0] == n_samples
-                ), f"{dataset_name}: X and y have different number of samples"
-            else:
-                assert (
-                    y.shape[0] == n_samples
-                ), f"{dataset_name}: X and y have different number of samples"
+                    len(np.unique(X[:, i])) >= 2
+                ), f"{dataset_name}: Feature {i} has less than 2 unique values"
+            assert (
+                len(np.unique(y)) >= 2
+            ), f"{dataset_name}: Target has less than 2 unique values"
 
             print(
                 f"Dataset {dataset_name} loaded successfully: X shape {X.shape}, y shape {y.shape}"
