@@ -10,11 +10,112 @@ from numpy import ndarray as ND
 from scipy.stats import norm as gaussian, t as student_t
 from sklearn.base import BaseEstimator, clone, RegressorMixin
 from sklearn.linear_model import LassoLars, Ridge, RidgeCV
-from sklearn.model_selection import KFold
+from sklearn.model_selection import KFold, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from sklearn.utils import check_random_state
 
 
-class FeatureStackingRegressor(BaseEstimator, RegressorMixin):
+class BFS(BaseEstimator, RegressorMixin):
+    @typed
+    def __init__(
+        self,
+        estimator: Any,
+        cv: int = 2,
+        use_scaling: bool = True,
+        use_positive: bool = True,
+        use_intercept: bool = False,
+        use_ridge: bool = True,
+    ):
+        self.estimator = estimator
+        self.estimators_ = []
+        self.feature_indices_ = []
+        self.cv = cv
+        self.use_scaling = use_scaling
+        self.use_positive = use_positive
+        self.use_intercept = use_intercept
+        self.use_ridge = use_ridge
+
+    @typed
+    def fit(
+        self, X: Float[ND, "n d_in"] | torch.Tensor, y: Float[ND, "n"] | torch.Tensor
+    ):
+        if isinstance(X, torch.Tensor):
+            X = X.cpu().detach().numpy()
+        if isinstance(y, torch.Tensor):
+            y = y.cpu().detach().numpy()
+
+        n_samples, n_features = X.shape
+        # Fit estimator for each feature separately and compute its cross-validated MSE
+        errors = np.zeros((n_features, n_samples))
+        for i in range(n_features):
+            kf = KFold(n_splits=self.cv, shuffle=False)
+            for train_idx, test_idx in kf.split(X):
+                X_train, X_test = X[train_idx, i : i + 1], X[test_idx, i : i + 1]
+                y_train, y_test = y[train_idx], y[test_idx]
+                estimator = clone(self.estimator)
+                estimator.fit(X_train, y_train)
+                errors[i, test_idx] = estimator.predict(X_test) - y_test
+        mse = np.mean(errors**2, axis=1)
+        # Sort features by increasing MSE and train estimator on every prefix
+        sorted_indices = np.argsort(mse)
+        for i in range(1, n_features + 1):
+            estimator = clone(self.estimator)
+            estimator.fit(X[:, sorted_indices[:i]], y)
+            self.estimators_.append(estimator)
+            self.feature_indices_.append(sorted_indices[:i])
+        # Train meta-estimator on their cross-validated predictions
+        meta_features = np.zeros((n_samples, n_features))
+        for i, feats in enumerate(self.feature_indices_):
+            kf = KFold(n_splits=self.cv, shuffle=False)
+            for train_idx, test_idx in kf.split(X):
+                X_train, X_test = X[train_idx][:, feats], X[test_idx][:, feats]
+                y_train, y_test = y[train_idx], y[test_idx]
+                assert X_train.shape == (len(train_idx), len(feats))
+                assert X_test.shape == (len(test_idx), len(feats))
+                assert y_train.shape == (len(train_idx),)
+                assert y_test.shape == (len(test_idx),)
+                estimator = clone(self.estimator)
+                estimator.fit(X_train, y_train)
+                meta_features[test_idx, i] = estimator.predict(X_test)
+        if self.use_scaling:
+            self.meta_estimator_ = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    (
+                        "estimator",
+                        Ridge(
+                            alpha=(
+                                1 / (2 * len(meta_features)) if self.use_ridge else 1e-9
+                            ),
+                            positive=self.use_positive,
+                            fit_intercept=self.use_intercept,
+                        ),
+                    ),
+                ]
+            )
+        else:
+            self.meta_estimator_ = Ridge(
+                alpha=1 / (2 * len(meta_features)) if self.use_ridge else 1e-9,
+                positive=self.use_positive,
+                fit_intercept=self.use_intercept,
+            )
+        self.meta_estimator_.fit(meta_features, y)
+        return self
+
+    @typed
+    def predict(self, X: Float[ND, "m d_in"] | torch.Tensor) -> Float[ND, "m"]:
+        if isinstance(X, torch.Tensor):
+            X = X.cpu().detach().numpy()
+        meta_features = np.zeros((X.shape[0], len(self.estimators_)))
+        for i, (estimator, feature_indices) in enumerate(
+            zip(self.estimators_, self.feature_indices_)
+        ):
+            meta_features[:, i] = estimator.predict(X[:, feature_indices])
+        return self.meta_estimator_.predict(meta_features)
+
+
+class RFS(BaseEstimator, RegressorMixin):
     @typed
     def __init__(
         self,
@@ -22,13 +123,17 @@ class FeatureStackingRegressor(BaseEstimator, RegressorMixin):
         n_estimators: int = 10,
         max_features: float | int = 0.9,
         random_state: int | None = None,
-        final_regressor: Any = RidgeCV(alphas=10 ** np.linspace(-4, 2, 10), cv=10),
+        use_scaling: bool = True,
+        use_intercept: bool = False,
+        use_positive: bool = True,
     ):
         self.estimator = estimator
         self.n_estimators = n_estimators
         self.max_features = max_features
         self.random_state = random_state
-        self.final_regressor = final_regressor
+        self.use_scaling = use_scaling
+        self.use_positive = use_positive
+        self.use_intercept = use_intercept
 
     @typed
     def fit(
@@ -92,8 +197,26 @@ class FeatureStackingRegressor(BaseEstimator, RegressorMixin):
                 meta_features[test_idx, j] = temp_estimator.predict(
                     X_test[:, feature_indices]
                 )
-        # self.meta_estimator_ = clone(self.final_regressor)
-        self.meta_estimator_ = Ridge(alpha=1 / (2 * len(meta_features)), positive=True)
+        if self.use_scaling:
+            self.meta_estimator_ = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    (
+                        "estimator",
+                        Ridge(
+                            alpha=1 / (2 * len(meta_features)),
+                            positive=self.use_positive,
+                            fit_intercept=self.use_intercept,
+                        ),
+                    ),
+                ]
+            )
+        else:
+            self.meta_estimator_ = Ridge(
+                alpha=1 / (2 * len(meta_features)),
+                positive=self.use_positive,
+                fit_intercept=self.use_intercept,
+            )
         self.meta_estimator_.fit(meta_features, y)
         return self
 
@@ -189,3 +312,16 @@ class RobustRegressor(BaseEstimator, RegressorMixin):
             predictions.append(pred)
         predictions = np.array(predictions)
         return np.mean(predictions, axis=0)
+
+
+def test_backward_feature_stacking_regressor():
+    X = np.random.randn(100, 10)
+    y = np.random.randn(100)
+    model = BFS(Ridge())
+    model.fit(X, y)
+    pred = model.predict(X)
+    assert pred.shape == (100,)
+
+
+if __name__ == "__main__":
+    test_backward_feature_stacking_regressor()
