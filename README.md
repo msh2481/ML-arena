@@ -1,6 +1,10 @@
 # ML-arena
 
 TODO:
+- Winsorizer class
+- play with boostings and random forests on synthetic data
+    - check monotonic constraints and feature interaction constraints
+    - try DART and RF parts of XGBoost
 - check outliers=True case
 - methods:
     - LGBM / Catboost / XGBoost / RandomForest

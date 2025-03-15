@@ -366,22 +366,22 @@ class RobustRegressor(BaseEstimator, RegressorMixin):
 
 def wrap(
     model: BaseEstimator,
-    scale_kind: Literal["standard", "robust", "quantile", "id"] = "standard",
+    scale: Literal["standard", "robust", "quantile", "id"] = "standard",
     feats: Literal["bfs", "rfs", "id"] = "id",
     outliers: Literal["robust", "id"] = "id",
     isotonic: bool = False,
 ) -> BaseEstimator:
     scaled_model = None
-    if scale_kind == "standard":
+    if scale == "standard":
         scaled_model = Pipeline([("scaler", StandardScaler()), ("model", model)])
-    elif scale_kind == "robust":
+    elif scale == "robust":
         scaled_model = Pipeline([("scaler", RobustScaler()), ("model", model)])
-    elif scale_kind == "quantile":
+    elif scale == "quantile":
         scaled_model = Pipeline([("scaler", QuantileTransformer()), ("model", model)])
-    elif scale_kind == "id":
+    elif scale == "id":
         scaled_model = model
     else:
-        raise ValueError(f"Invalid scaling method: {scale_kind}")
+        raise ValueError(f"Invalid scaling method: {scale}")
     feature_selected = None
     if feats == "bfs":
         feature_selected = BFS(scaled_model)

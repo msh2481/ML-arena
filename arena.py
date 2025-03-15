@@ -3,17 +3,26 @@ import os
 from datetime import datetime
 from typing import Callable
 
-import linear_models
 import numpy as np
 import pandas as pd
 from beartype import beartype as typed
 from datasets import load_dataset, split_data
 from jaxtyping import Float
 from joblib import delayed, Parallel
+from lightgbm import LGBMRegressor
+from linear_models import MISO, wrap
 from loguru import logger
 from numpy import ndarray as ND
 from sklearn.base import BaseEstimator
+from sklearn.ensemble import (
+    GradientBoostingRegressor,
+    HistGradientBoostingRegressor,
+    RandomForestRegressor,
+)
+from sklearn.linear_model import ARDRegression, LinearRegression, Ridge
 from tqdm.auto import tqdm
+from tree_models import HCV, Hybrid
+from xgboost import XGBRegressor
 
 
 class Silencer:
@@ -48,11 +57,10 @@ def get_metrics(
     outliers: bool,
 ) -> Float[ND, "n_players 3"]:
     n_samples = X.shape[0]
-    test_size = 1 - 1 / (np.log(n_samples) - 1)
     X_train, y_train, X_test, y_test = split_data(
         X,
         y,
-        test_size=test_size,
+        test_size=0.5,
         bad_features=bad_features,
         outliers=outliers,
     )
@@ -64,7 +72,7 @@ def get_metrics(
         player = player_fn(X_train, y_train)
         with Silencer():
             player.fit(X_train, y_train)
-        p = player.predict(X_test)
+            p = player.predict(X_test)
         current_mse = np.square(p - y_test).mean()
         current_mae = np.abs(p - y_test).mean()
         current_profit = (y_test * (p > 0)).mean()
@@ -105,7 +113,27 @@ def run_ml_evaluation(
     outliers: bool,
     matches: int,
 ):
-    player_dict = {**linear_models.players}
+    player_dict = {
+        # "MISO": lambda x, _: MISO(),
+        # "MISO(simple)": lambda x, _: MISO(feats="id", final_isotonic=False),
+        # "HCV+Hybrid": lambda x, _: Hybrid(use_hcv=True),
+        "HCV+XGBoost": lambda x, _: HCV(XGBRegressor(learning_rate=0.05, max_depth=3)),
+        "XGBoost": lambda x, _: XGBRegressor(learning_rate=0.05, max_depth=3),
+        # "HCV+IsoHybrid": lambda x, _: Hybrid(use_hcv=True, use_isotonic=True),
+        # "LightGBM": lambda x, _: LGBMRegressor(learning_rate=0.05, max_depth=3),
+        # "HCV(Full)+XGBoost": lambda x, _: HCV(
+        #     XGBRegressor(learning_rate=0.05, max_depth=3), run_full=True
+        # ),
+        "RandomForest": lambda x, _: RandomForestRegressor(
+            n_estimators=100, max_depth=3
+        ),
+        "IsoBFS(ARDRegression)": lambda x, _: wrap(
+            ARDRegression(), feats="bfs", isotonic=True
+        ),
+        "IsoBFS(Ridge)": lambda x, _: wrap(
+            Ridge(1 / (2 * len(x))), feats="bfs", isotonic=True
+        ),
+    }
     player_names = list(player_dict.keys())
     players = [player_dict[name] for name in player_names]
     all_metrics = []
@@ -165,7 +193,7 @@ if __name__ == "__main__":
         datasets=datasets,
         bad_features=True,
         outliers=False,
-        matches=10,
+        matches=20,
     )
     mse = df["MSE"]
     mae = df["MAE"]
