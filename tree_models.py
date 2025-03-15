@@ -20,27 +20,31 @@ from xgboost import XGBRegressor
 
 
 class Horizontal(BaseEstimator, RegressorMixin):
-    def __init__(self, weights: list[float] = [1.0, 1.0, 1.0]):
+    def __init__(self, use_gs: bool = True):
         self.miso = MISO()
         self.rf = RandomForestRegressor(n_estimators=100, max_depth=3)
         self.lgbm = LGBMRegressor(learning_rate=0.05, max_depth=3)
-        self.voting = VotingRegressor(
-            estimators=[
-                ("miso", self.miso),
-                ("rf", self.rf),
-                ("lgbm", self.lgbm),
-            ],
-            weights=weights,
-        )
+        if use_gs:
+            self.lgbm = GS(self.lgbm)
 
     def fit(
         self, X: Float[ND, "n d_in"] | torch.Tensor, y: Float[ND, "n"] | torch.Tensor
     ):
-        self.voting.fit(X, y)
+        self.miso.fit(X, y)
+        self.rf.fit(X, y)
+        self.lgbm.fit(X, y)
         return self
 
     def predict(self, X: Float[ND, "m d_in"] | torch.Tensor) -> Float[ND, "m"]:
-        return self.voting.predict(X)
+        meta_features = np.zeros((X.shape[0], 3))
+        meta_features[:, 0] = self.miso.predict(X)
+        meta_features[:, 1] = self.rf.predict(X)
+        meta_features[:, 2] = self.lgbm.predict(X)
+        return (
+            0.25 * meta_features[:, 0]
+            + 0.25 * meta_features[:, 1]
+            + 0.5 * meta_features[:, 2]
+        )
 
 
 class Hybrid(BaseEstimator, RegressorMixin):
@@ -103,8 +107,6 @@ class GS(BaseEstimator, RegressorMixin):
         max_depths: list[int] = [2, 3],
         learning_rates: list[float] = [0.02, 0.05, 0.1, 0.2],
         cv: int = 2,
-        random_state: int = 42,
-        factor: int = 3,
     ):
         self.estimator = estimator
         self.top_k = top_k
@@ -112,9 +114,7 @@ class GS(BaseEstimator, RegressorMixin):
             "max_depth": max_depths,
             "learning_rate": learning_rates,
         }
-        self.factor = factor
         self.cv = cv
-        self.random_state = random_state
 
     @typed
     def fit(

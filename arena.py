@@ -116,9 +116,6 @@ def run_ml_evaluation(
         # Hybrid models
         "Hybrid": lambda x, _: Hybrid(tree_type="lgbm"),
         "Horizontal": lambda x, _: Horizontal(),
-        "Horizontal(2, 1, 1)": lambda x, _: Horizontal([2.0, 1.0, 1.0]),
-        "Horizontal(1, 2, 1)": lambda x, _: Horizontal([1.0, 2.0, 1.0]),
-        "Horizontal(1, 1, 2)": lambda x, _: Horizontal([1.0, 1.0, 2.0]),
         # "GS+Hybrid": lambda x, _: Hybrid(use_gs=True, tree_type="lgbm"),
         # LGBM
         # "GS+LGBM": lambda x, _: GS(LGBMRegressor(learning_rate=0.05, max_depth=3)),
@@ -190,9 +187,9 @@ if __name__ == "__main__":
     ]
     df = run_ml_evaluation(
         datasets=datasets,
-        bad_features=True,
-        outliers=False,
-        matches=20,
+        bad_features=False,
+        outliers=True,
+        matches=10,
     )
     mse = df["MSE"]
     mae = df["MAE"]
