@@ -4,55 +4,64 @@ from beartype import beartype as typed
 from beartype.typing import Literal
 from jaxtyping import Float, Int
 from lightgbm import LGBMRegressor
+from linear_models import MISO
 from loguru import logger
 from numpy import ndarray as ND
 from scipy.stats import norm
 from sklearn.base import BaseEstimator, clone, RegressorMixin
-from sklearn.ensemble import (
-    GradientBoostingRegressor,
-    RandomForestRegressor,
-    VotingRegressor,
-)
-from sklearn.experimental import enable_halving_search_cv
+from sklearn.ensemble import RandomForestRegressor, VotingRegressor
 from sklearn.isotonic import IsotonicRegression
-from sklearn.linear_model import (
-    ARDRegression,
-    BayesianRidge,
-    Lasso,
-    LassoCV,
-    LinearRegression,
-    Ridge,
-    RidgeCV,
-)
-from sklearn.model_selection import GridSearchCV as GS, HalvingGridSearchCV, KFold
+from sklearn.linear_model import ARDRegression, Lasso
+from sklearn.model_selection import GridSearchCV, KFold
 from sklearn.pipeline import Pipeline
-
 from sklearn.preprocessing import QuantileTransformer, RobustScaler, StandardScaler
-from sklearn.tree import DecisionTreeRegressor
 from wrappers import BFS, Iso, RFS, RobustRegressor, wrap
 from xgboost import XGBRegressor
+
+
+class Horizontal(BaseEstimator, RegressorMixin):
+    def __init__(self, weights: list[float] = [1.0, 1.0, 1.0]):
+        self.miso = MISO()
+        self.rf = RandomForestRegressor(n_estimators=100, max_depth=3)
+        self.lgbm = LGBMRegressor(learning_rate=0.05, max_depth=3)
+        self.voting = VotingRegressor(
+            estimators=[
+                ("miso", self.miso),
+                ("rf", self.rf),
+                ("lgbm", self.lgbm),
+            ],
+            weights=weights,
+        )
+
+    def fit(
+        self, X: Float[ND, "n d_in"] | torch.Tensor, y: Float[ND, "n"] | torch.Tensor
+    ):
+        self.voting.fit(X, y)
+        return self
+
+    def predict(self, X: Float[ND, "m d_in"] | torch.Tensor) -> Float[ND, "m"]:
+        return self.voting.predict(X)
 
 
 class Hybrid(BaseEstimator, RegressorMixin):
     def __init__(
         self,
-        use_hcv: bool = False,
+        add_deviations: bool = False,
+        use_gs: bool = False,
         use_isotonic: bool = False,
-        scale: Literal["id", "standard", "robust"] = "standard",
-        feats: Literal["id", "bfs", "rfs"] = "bfs",
+        tree_type: Literal["lgbm", "rf"] = "lgbm",
     ):
-        self.use_hcv = use_hcv
+        self.use_gs = use_gs
         self.use_isotonic = use_isotonic
-        self.feats = feats
-        self.linear = wrap(
-            ARDRegression(),
-            scale=scale,
-            feats=feats,
-            isotonic=False,
+        self.miso = MISO(
+            feats="id", final_isotonic=False, add_deviations=add_deviations
         )
-        self.tree = XGBRegressor(learning_rate=0.05, max_depth=3)
-        if self.use_hcv:
-            self.tree = HCV(self.tree)
+        if tree_type == "lgbm":
+            self.tree = LGBMRegressor(learning_rate=0.05, max_depth=3)
+        elif tree_type == "rf":
+            self.tree = RandomForestRegressor(n_estimators=100, max_depth=3)
+        if self.use_gs and tree_type != "rf":
+            self.tree = GS(self.tree)
         if self.use_isotonic:
             self.isotonic = IsotonicRegression(out_of_bounds="clip")
 
@@ -65,57 +74,45 @@ class Hybrid(BaseEstimator, RegressorMixin):
         if isinstance(y, torch.Tensor):
             y = y.cpu().detach().numpy()
 
-        self.linear.fit(X, y)
-        linear_pred = self.linear.predict(X)
-        self.tree.fit(X, y - linear_pred)
+        self.miso.fit(X, y)
+        miso_pred = self.miso.predict(X)
+        self.tree.fit(X, y - miso_pred)
         tree_pred = self.tree.predict(X)
         if self.use_isotonic:
-            self.isotonic.fit(linear_pred + tree_pred, y)
+            self.isotonic.fit(miso_pred + tree_pred, y)
         return self
 
     @typed
     def predict(self, X: Float[ND, "m d_in"] | torch.Tensor) -> Float[ND, "m"]:
         if isinstance(X, torch.Tensor):
             X = X.cpu().detach().numpy()
-        linear_pred = self.linear.predict(X)
+        miso_pred = self.miso.predict(X)
         tree_pred = self.tree.predict(X)
         if self.use_isotonic:
-            isotonic_pred = self.isotonic.predict(linear_pred + tree_pred)
+            isotonic_pred = self.isotonic.predict(miso_pred + tree_pred)
             return isotonic_pred
-        return linear_pred + tree_pred
+        return miso_pred + tree_pred
 
 
-class HCV(BaseEstimator, RegressorMixin):
+class GS(BaseEstimator, RegressorMixin):
     @typed
     def __init__(
         self,
         estimator: BaseEstimator,
         top_k: int = 3,
-        resource: str = "n_samples",
-        min_resources: int | str = 50,
-        max_resources: int | str = "auto",
         max_depths: list[int] = [2, 3],
         learning_rates: list[float] = [0.02, 0.05, 0.1, 0.2],
-        aggressive_elimination: bool = False,
         cv: int = 2,
         random_state: int = 42,
         factor: int = 3,
-        run_full: bool = False,
     ):
         self.estimator = estimator
         self.top_k = top_k
-        if run_full:
-            max_depths = [2, 3, 4]
-            learning_rates = [0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5]
         self.param_grid = {
             "max_depth": max_depths,
             "learning_rate": learning_rates,
         }
         self.factor = factor
-        self.resource = resource
-        self.min_resources = min_resources
-        self.max_resources = max_resources
-        self.aggressive_elimination = aggressive_elimination
         self.cv = cv
         self.random_state = random_state
 
@@ -128,16 +125,10 @@ class HCV(BaseEstimator, RegressorMixin):
         if isinstance(y, torch.Tensor):
             y = y.cpu().detach().numpy()
 
-        self.search_ = HalvingGridSearchCV(
+        self.search_ = GridSearchCV(
             estimator=self.estimator,
             param_grid=self.param_grid,
-            factor=self.factor,
-            resource=self.resource,
-            min_resources=self.min_resources,
-            max_resources=self.max_resources,
-            aggressive_elimination=self.aggressive_elimination,
             cv=self.cv,
-            random_state=self.random_state,
         )
 
         self.search_.fit(X, y)
@@ -150,7 +141,7 @@ class HCV(BaseEstimator, RegressorMixin):
         estimators = []
         for idx in indices:
             params = {k: results["param_" + k][idx] for k in self.param_grid.keys()}
-            logger.info(f"Best parameters #{idx}: {params}")
+            # logger.info(f"Best parameters #{idx}: {params}")
             estimator = clone(self.estimator)
             estimator.set_params(**params)
             estimator.fit(X, y)
@@ -290,13 +281,7 @@ def test_halving_cv():
     X, y = make_regression(n_samples=200, n_features=10, random_state=42)
 
     # Using default param_grid
-    model = HCV(
-        estimator=XGBRegressor(),
-        resource="n_estimators",
-        factor=2,
-        cv=3,
-        random_state=42,
-    )
+    model = GS(XGBRegressor())
 
     model.fit(X, y)
     pred = model.predict(X)
@@ -305,48 +290,14 @@ def test_halving_cv():
     print(f"Prediction shape: {pred.shape}")
 
 
-if __name__ == "__main__":
-    test_halving_cv()
+def test_horizontal():
+    from sklearn.datasets import make_regression
 
-# players = {
-#     "DecisionTreeRegressor": lambda x, _: wrap(
-#         GS(DecisionTreeRegressor(), param_grid={"max_depth": [2, 4, 6]}), scale="id"
-#     ),
-#     "RandomForestRegressor": lambda x, _: wrap(
-#         GS(RandomForestRegressor(), param_grid={"max_depth": [2, 4, 6]}), scale="id"
-#     ),
-#     "GradientBoostingRegressor": lambda x, _: wrap(
-#         GS(
-#             GradientBoostingRegressor(),
-#             param_grid={"max_depth": [2, 4, 6]},
-#         ),
-#         scale="id",
-#     ),
-#     "XGBRegressor": lambda x, _: wrap(
-#         GS(XGBRegressor(), param_grid={"max_depth": [2, 4, 6]}), scale="id"
-#     ),
-#     "LGBMRegressor": lambda x, _: wrap(
-#         GS(LGBMRegressor(), param_grid={"max_depth": [2, 4, 6]}), scale="id"
-#     ),
-#     "XGBRegressor_Halving": lambda x, _: wrap(
-#         HalvingCV(
-#             XGBRegressor(),
-#             resource="n_estimators",
-#         ),
-#         scale="id",
-#     ),
-#     "LGBMRegressor_Halving": lambda x, _: wrap(
-#         HalvingCV(
-#             LGBMRegressor(),
-#             resource="n_estimators",
-#         ),
-#         scale="id",
-#     ),
-#     "GradientBoostingRegressor_Halving": lambda x, _: wrap(
-#         HalvingCV(
-#             GradientBoostingRegressor(),
-#             resource="n_estimators",
-#         ),
-#         scale="id",
-#     ),
-# }
+    X, y = make_regression(n_samples=200, n_features=10, random_state=42)
+    model = Horizontal()
+    model.fit(X, y)
+    pred = model.predict(X)
+
+
+if __name__ == "__main__":
+    test_horizontal()

@@ -8,21 +8,17 @@ import pandas as pd
 from beartype import beartype as typed
 from datasets import load_dataset, split_data
 from jaxtyping import Float
-from joblib import delayed, Parallel
+from kernel_models import KernelKNN
 from lightgbm import LGBMRegressor
 from linear_models import MISO, wrap
 from loguru import logger
 from numpy import ndarray as ND
 from sklearn.base import BaseEstimator
-from sklearn.ensemble import (
-    GradientBoostingRegressor,
-    HistGradientBoostingRegressor,
-    RandomForestRegressor,
-)
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import ARDRegression, LinearRegression, Ridge
 from tqdm.auto import tqdm
-from tree_models import HCV, Hybrid
-from xgboost import XGBRegressor
+from tree_models import GS, Horizontal, Hybrid, XGBRegressor
+from sklearn.model_selection import GridSearchCV as GS
 
 
 class Silencer:
@@ -93,6 +89,7 @@ def collect_metrics(
     dataset: str,
     player_names: list[str],
 ) -> Float[ND, "n_players 3"]:
+    logger.info(f"Running {dataset}...")
     metrics_list = [
         get_metrics(X, y, players, bad_features, outliers) for _ in tqdm(range(matches))
     ]
@@ -114,25 +111,27 @@ def run_ml_evaluation(
     matches: int,
 ):
     player_dict = {
-        # "MISO": lambda x, _: MISO(),
-        # "MISO(simple)": lambda x, _: MISO(feats="id", final_isotonic=False),
-        # "HCV+Hybrid": lambda x, _: Hybrid(use_hcv=True),
-        "HCV+XGBoost": lambda x, _: HCV(XGBRegressor(learning_rate=0.05, max_depth=3)),
-        "XGBoost": lambda x, _: XGBRegressor(learning_rate=0.05, max_depth=3),
-        # "HCV+IsoHybrid": lambda x, _: Hybrid(use_hcv=True, use_isotonic=True),
-        # "LightGBM": lambda x, _: LGBMRegressor(learning_rate=0.05, max_depth=3),
-        # "HCV(Full)+XGBoost": lambda x, _: HCV(
-        #     XGBRegressor(learning_rate=0.05, max_depth=3), run_full=True
-        # ),
+        # MISO
+        "MISO": lambda x, _: MISO(),
+        # Hybrid models
+        "Hybrid": lambda x, _: Hybrid(tree_type="lgbm"),
+        "Horizontal": lambda x, _: Horizontal(),
+        "Horizontal(2, 1, 1)": lambda x, _: Horizontal([2.0, 1.0, 1.0]),
+        "Horizontal(1, 2, 1)": lambda x, _: Horizontal([1.0, 2.0, 1.0]),
+        "Horizontal(1, 1, 2)": lambda x, _: Horizontal([1.0, 1.0, 2.0]),
+        # "GS+Hybrid": lambda x, _: Hybrid(use_gs=True, tree_type="lgbm"),
+        # LGBM
+        # "GS+LGBM": lambda x, _: GS(LGBMRegressor(learning_rate=0.05, max_depth=3)),
+        "LGBM": lambda x, _: LGBMRegressor(learning_rate=0.05, max_depth=3),
+        # Baselines
         "RandomForest": lambda x, _: RandomForestRegressor(
             n_estimators=100, max_depth=3
         ),
         "IsoBFS(ARDRegression)": lambda x, _: wrap(
             ARDRegression(), feats="bfs", isotonic=True
         ),
-        "IsoBFS(Ridge)": lambda x, _: wrap(
-            Ridge(1 / (2 * len(x))), feats="bfs", isotonic=True
-        ),
+        "Ridge": lambda x, _: wrap(Ridge(1 / (2 * len(x)))),
+        "LinearRegression": lambda x, _: wrap(LinearRegression()),
     }
     player_names = list(player_dict.keys())
     players = [player_dict[name] for name in player_names]

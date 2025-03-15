@@ -21,12 +21,16 @@ from wrappers import BFS, Iso, RFS, RobustRegressor, wrap
 
 
 class MISO(BaseEstimator, RegressorMixin):
+    _estimator_type = "regressor"
+
     def __init__(
         self,
         feats: Literal["id", "bfs", "rfs"] = "bfs",
+        add_deviations: bool = False,
         final_isotonic: bool = True,
     ):
         self.isotonics = []
+        self.add_deviations = add_deviations
         self.final = wrap(
             ARDRegression(),
             feats=feats,
@@ -42,13 +46,22 @@ class MISO(BaseEstimator, RegressorMixin):
         self.X_train_ = X
         self.y_train_ = y
         n_samples, n_features = X.shape
-        meta_features = np.zeros((n_samples, n_features))
+        meta_features = np.zeros((n_samples, n_features * (1 + self.add_deviations)))
         for i in range(n_features):
             regressor = IsotonicRegression(increasing="auto", out_of_bounds="clip")
             x_train = X[:, [i]]
             regressor.fit(x_train, y)
             self.isotonics.append(regressor)
             meta_features[:, i] = regressor.predict(x_train)
+        if self.add_deviations:
+            self.medians = np.median(X, axis=0)
+            deviations = np.abs(X - self.medians)
+            for i in range(n_features):
+                x_train = deviations[:, [i]]
+                regressor = IsotonicRegression(increasing="auto", out_of_bounds="clip")
+                regressor.fit(x_train, y)
+                self.isotonics.append(regressor)
+                meta_features[:, n_features + i] = regressor.predict(x_train)
         self.final.fit(meta_features, y)
         return self
 
@@ -57,9 +70,16 @@ class MISO(BaseEstimator, RegressorMixin):
         if isinstance(X, torch.Tensor):
             X = X.cpu().detach().numpy()
         n_samples, n_features = X.shape
-        meta_features = np.zeros((n_samples, n_features))
+        meta_features = np.zeros((n_samples, n_features * (1 + self.add_deviations)))
         for i in range(n_features):
             meta_features[:, i] = self.isotonics[i].predict(X[:, [i]])
+        if self.add_deviations:
+            deviations = np.abs(X - self.medians)
+            for i in range(n_features):
+                x_train = deviations[:, [i]]
+                meta_features[:, n_features + i] = self.isotonics[
+                    n_features + i
+                ].predict(x_train)
         return self.final.predict(meta_features)
 
     @typed
@@ -118,49 +138,11 @@ players = {
 }
 
 
-# # %%
-# from matplotlib import pyplot as plt
+def test_miso_is_regressor():
+    from sklearn.base import is_regressor
+
+    assert is_regressor(MISO())
 
 
-# def f(X):
-#     return np.log1p(X[:, 0]) + np.log1p(X[:, 1])
-
-
-# N = 1000
-# X = np.exp(np.random.randn(N, 2))
-# y = f(X)
-
-# model = MISO(final_isotonic=True, feats="bfs")
-# model.fit(X, y)
-
-# # Plot 2d heatmap of the predictions
-# ## Create a grid of points
-# x1 = np.linspace(0, 10, 100)
-# x2 = np.linspace(0, 10, 100)
-# X1, X2 = np.meshgrid(x1, x2)
-# X_grid = np.c_[X1.ravel(), X2.ravel()]
-
-# pred = model.predict(X_grid)
-# gt = f(X_grid)
-
-# # Plot the predictions
-# plt.imshow(pred.reshape(100, 100))
-# plt.colorbar()
-# plt.show()
-
-# plt.scatter(pred, gt)
-# plt.plot(sorted(pred), sorted(pred))
-# plt.show()
-
-# model.debug()
-
-# train_pred = model.predict(X)
-# train_mse = np.mean((train_pred - y) ** 2)
-# print(f"Train MSE: {train_mse:.4f}")
-# X_test = np.exp(np.random.randn(1000, 2))
-# test_pred = model.predict(X_test)
-# test_mse = np.mean((test_pred - f(X_test)) ** 2)
-# print(f"Test MSE: {test_mse:.4f}")
-
-
-# # %%
+if __name__ == "__main__":
+    test_miso_is_regressor()
