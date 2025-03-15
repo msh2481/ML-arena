@@ -29,7 +29,9 @@ class MISO(RegressorMixin, BaseEstimator):
     ):
         super().__init__()
         self.isotonics = []
+        self.feats = feats
         self.add_deviations = add_deviations
+        self.final_isotonic = final_isotonic
         self.final = wrap(
             ARDRegression(),
             feats=feats,
