@@ -20,15 +20,14 @@ from sklearn.preprocessing import QuantileTransformer, RobustScaler, StandardSca
 from wrappers import BFS, Iso, RFS, RobustRegressor, wrap
 
 
-class MISO(BaseEstimator, RegressorMixin):
-    _estimator_type = "regressor"
-
+class MISO(RegressorMixin, BaseEstimator):
     def __init__(
         self,
         feats: Literal["id", "bfs", "rfs"] = "bfs",
         add_deviations: bool = False,
         final_isotonic: bool = True,
     ):
+        super().__init__()
         self.isotonics = []
         self.add_deviations = add_deviations
         self.final = wrap(
